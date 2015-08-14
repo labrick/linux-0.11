@@ -165,58 +165,84 @@ ok_load_setup:
 	seg cs
 ! 下句保存每磁道扇区数。对于软盘来说(dl=0)，其最大磁道号不会超过256，ch已经足够表示它，
 ! 因此cl的位6-7肯定为0。又86行已置ch=0，因此此时cx中是每磁道扇区数。
-	mov	sectors,cx
+	mov	sectors,cx		! sectors定义在最后.word 0
 	mov	ax,#INITSEG
-	mov	es,ax
+	mov	es,ax			! 因为上面取磁盘参数中断改掉了es的值，这里重新改过来
 
 ! Print some inane message
-
+! 显示信息：“‘Loading system ...'回车换行”，共显示包括回车和换行控制字符在内的24个字符
+! BIOS中断0x10功能号ah = 0x03，读光标位置。
+! 输出：bh = 页号
+! 返回：ch = 扫描开始线；	cl = 扫描结束线；
+! dh = 行号（0x00顶端）;	dl = 列号（0x00最左边）。
+!
+! BIOS中断0x10功能号ah = 0x13，显示字符串。
+! 输入：al = 放置光标的方式及规定属性。0x01-表示使用bl中的属性值，光标停在字符串结尾处。
+! es:bp 此寄存器对指向要显示的字符串起始位置处。cx = 显示的字符串字符数。
+! bh = 显示页面号；	bl = 字符属性；	dl = 列号。
 	mov	ah,#0x03		! read cursor pos
-	xor	bh,bh
-	int	0x10
+	xor	bh,bh			! 首先读光标位置。返回光标位置值在dx中。
+	int	0x10			! dh=行（0--24）； dl=列（0--79）。供显示字符串用。
 	
-	mov	cx,#24
+	mov	cx,#24			!共显示24个字符。
 	mov	bx,#0x0007		! page 0, attribute 7 (normal)
-	mov	bp,#msg1
+	mov	bp,#msg1		! es:bp 寄存器对指向要显示的字符串
 	mov	ax,#0x1301		! write string, move cursor
-	int	0x10
+	int	0x10			! 写字符串并移动光标到串结尾处。
 
 ! ok, we've written the message, now
 ! we want to load the system (at 0x10000)
-
+! 我们开始将system模块加载到0x10000（64KB）开始出
 	mov	ax,#SYSSEG
-	mov	es,ax		! segment of 0x010000
-	call	read_it
-	call	kill_motor
+	mov	es,ax		! segment of 0x010000	es = 存放system的段地址
+	call	read_it	! 读磁盘上system模块，es为输入参数
+	call	kill_motor	! 关闭驱动器马达，这样就可以知道驱动器的状态了
 
 ! After that we check which root-device to use. If the device is
 ! defined (!= 0), nothing is done and the given device is used.
 ! Otherwise, either /dev/PS0 (2,28) or /dev/at0 (2,8), depending
 ! on the number of sectors that the BIOS reports currently.
-
+! 此后，我们检查要使用哪个根文件系统设备（简称根设备）。如果已经指定了设备（!=0）
+! 就直接使用给定的设备。否则就需要根据BIOS报告的每磁盘扇区数来确定到底是用
+! /dev/PS0(2,28)还是/dev/at0(2,8)。
+!! 上面一行中两个设备的含义：
+!! 在Linux中软驱的主设备号是2（参见第43行的注释），次设备号 = type\*4 + nr，其中
+!! nr为0-3分别对应软驱A、B、C或D；type是软驱的类型（2-->1.2MB或7-->1.44MB等）。
+!! 因为7\*4 + 0 = 28，所以/dev/PS0(2,28)指的是1.44MB A驱动器，其设备号是0x021c
+!! 同理/dev/at0(2,8)指的是1.2MB A驱动器，其设备号是0x0208。
+! 下面root_dev定义在引导扇区508,509字节处，指根文件系统所在设备号。0x0306指第2个
+! 硬盘第1个分区。这里默认为0x0306是因为当时linus开发Linux系统时是在第2个硬盘第1个
+! 分区中存放根文件系统。这个指需要根据你自己根文件系统所在硬盘和分区进行修改。
+! 例如，如果你的根文件系统在第1个硬盘的第1个分区上，那么该值应该为0x0301
+! 即(0x01,0x03)。如果根文件系统是在第2个Bochs软盘上，那么该值应该为0x021D
+! 即(0x1D,0x02)。当编译内核时，你可以在Makefile文件中另行指定你自己的值，内核映像
+! 文件Image的创建程序tools/build会使用你指定的值来设置你的根文件系统所在设备号。
 	seg cs
-	mov	ax,root_dev
+	mov	ax,root_dev		! 去508,509字节处的根设备号并判断是否已被定义
 	cmp	ax,#0
 	jne	root_defined
+! 取上面第88行保存的每磁道扇区数。如果sectors=15则说明是1.2MB的驱动器；
+! 如果sectors=18，则说明是1.44MB软驱。因为是可引导的驱动器，所以肯定是A驱。
 	seg cs
-	mov	bx,sectors
+	mov	bx,sectors		! 上面已经保存了读回的每磁道扇区数
 	mov	ax,#0x0208		! /dev/ps0 - 1.2Mb
-	cmp	bx,#15
-	je	root_defined
+	cmp	bx,#15			! 判断每磁道扇区数是否=15
+	je	root_defined	! 如果相等，则ax中就是引导驱动器的设备号
 	mov	ax,#0x021c		! /dev/PS0 - 1.44Mb
 	cmp	bx,#18
 	je	root_defined
-undef_root:
+undef_root:				! 如果都不一样，则死循环（死机）。
 	jmp undef_root
 root_defined:
 	seg cs
-	mov	root_dev,ax
+	mov	root_dev,ax		! 将检查过的设备号保存在root_dev中
 
 ! after that (everyting loaded), we jump to
 ! the setup-routine loaded directly after
 ! the bootblock:
-
-	jmpi	0,SETUPSEG
+! 到此，所有程序都加载完毕，我们就跳转到被加载在bootsect后面的setup程序去。
+! 段间跳转指令（Jump Intersegment）。跳转到0x9020:0000（setup.s程序开始处）去执行。
+	jmpi	0,SETUPSEG	!!!! 到此本程序就结束了。!!!!
 
 ! This routine loads the system at address 0x10000, making sure
 ! no 64kB boundaries are crossed. We try to load it as fast as
@@ -224,78 +250,111 @@ root_defined:
 !
 ! in:	es - starting address segment (normally 0x1000)
 !
+! 该子程序将系统模块加载到内存地址0x10000处，并确定没有跨越64KB的内存边界。
+! 我们试图尽快地进行加载，只要可能，就每次加载整条磁道的数据。
+! 输入:es - 开始内存地址段值（通常0x1000）
+!
+! 下面伪操作符.word定义一个2字节目标。相当于C语言程序中定义的变量和所占内存空间大小。
+! '1+SETUPLEN'表示开始时已经读进1个引导扇区和setup程序所占的扇区数SETUPLEN。
 sread:	.word 1+SETUPLEN	! sectors read of current track
-head:	.word 0			! current head
-track:	.word 0			! current track
+head:	.word 0			! current head		! 标志当前所读的磁头
+track:	.word 0			! current track		! 标志当前所读的磁道
 
 read_it:
-	mov ax,es
+! 首先测试输入的段值。从盘上读入的数据必须存放在位于内存地址64KB的边界开始处，否则进入
+! 死循环。清bx寄存器，用于表示当前段内存放数据的开始位置。
+! 153行上的指定test以比特位逻辑与两个操作数。若两个操作数对应的比特位都为1，则结果值的
+! 对应比特位为1，否则为0。该操作结果只影响标志（零标志ZF等）。例如，若AX=0x1000，那么
+! test指令的执行结果是(0x1000 & 0x0fff) = 0x0000，于是ZF标志置位。此时即下一条指令
+! jne条件不成立。
+	mov ax,es		! 这里的es = 0x10000，我们怎么确定cs的值呢？？？？(seg是伪指令)
 	test ax,#0x0fff
-die:	jne die			! es must be at 64kB boundary
-	xor bx,bx		! bx is starting address within segment
+die:jne die			! es must be at 64kB boundary
+	xor bx,bx		! bx is starting address within segment	! bx为段内偏移
 rp_read:
+! 接着判断是否已经读入全部数据。比较当前所读段是否就是系统数据末端所处的段（#ENDSEG），
+! 如果不是就跳转至下面ok1_read标号处继续读数据。否则退出子程序返回。
 	mov ax,es
-	cmp ax,#ENDSEG		! have we loaded all yet?
+	cmp ax,#ENDSEG		! have we loaded all yet?	! 是否已经加载了全部数据？
 	jb ok1_read
 	ret
 ok1_read:
+! 计算和验证当前磁道需要读取的扇区数，放在ax寄存器中。
+! 根据当前磁道还未读取的扇区数以及段内数据字节开始偏移位置，计算如果全部读取这些未读扇区，
+! 所读总字节数是否会超过64KB段长度的限制。若会超过，则根据此次最多能读入的字节数
+! （64KB - 段内偏移位置），反算出此次需要读取的扇区数。
 	seg cs
-	mov ax,sectors
-	sub ax,sread
-	mov cx,ax
-	shl cx,#9
-	add cx,bx
-	jnc ok2_read
+	mov ax,sectors		! 取每磁道扇区数
+	sub ax,sread		! 减去当前磁道已读扇区数
+	mov cx,ax			! cx = ax = 当前未读扇区数
+	shl cx,#9			! cx = cx \* 512字节 + 段内当前偏移值(bx)
+	add cx,bx			!    = 此次读操作后，段内共读入的字节数
+	jnc ok2_read		! 若没有超过64KB字节，则跳转至ok2_read处执行
 	je ok2_read
+! 若加上此次将读磁道上所有未读扇区时会超过64KB，则计算此时最多能读入的字节数：
+! (64KB - 段内读偏移位置)，再转换成需读取的扇区数。其中0减某数就是取该数64KB的补值。
 	xor ax,ax
 	sub ax,bx
 	shr ax,#9
 ok2_read:
-	call read_track
-	mov cx,ax
-	add ax,sread
+! 读当前磁道上指定开始扇区(cl)和需读扇区数(al)的数据到es:bx开始处。然后统计当前磁道上
+! 已经读取的扇区数并与磁道最大扇区数sectors作比较。如果小于sectors说明当前磁道上还有
+! 扇区未读。于是跳转到ok3_read处继续操作。
+	call read_track		! 读当前磁道上指定开始扇区和需读扇区数的数据
+	mov cx,ax			! cx = 该次操作已读取的扇区数
+	add ax,sread		! 加上当前磁道上已经读取的扇区数
 	seg cs
-	cmp ax,sectors
+	cmp ax,sectors		! 如果当前磁道上还有扇区未读，则跳转到ok3_read处
 	jne ok3_read
+! 若该磁道的当前磁头面所有扇区已经读取，则读该磁道的下一个磁头面(1号磁头) 上的数据。
+! 如果已经完成，则去读下一个磁道。
 	mov ax,#1
-	sub ax,head
-	jne ok4_read
-	inc track
+	sub ax,head			! 判断当前磁头号
+	jne ok4_read		! 如果是0磁头，则再去读1磁头面上的扇区数据
+	inc track			! 否则去读下一个磁道
 ok4_read:
-	mov head,ax
-	xor ax,ax
+	mov head,ax			! 保存当前磁头号
+	xor ax,ax			! 清当前磁道已读扇区数
 ok3_read:
-	mov sread,ax
-	shl cx,#9
-	add bx,cx
+! 如果当前磁道上还有未读扇区，则首先保存当前磁道已读扇区数，然后调整存放数据处的开始位置。
+! 若小于64KB边界值，则跳转到rp_read(56行)处，继续读数据。
+	mov sread,ax		! 保存当前磁道已读扇区数
+	shl cx,#9			! 上次已读扇区数\*512字节
+	add bx,cx			! 调整当前段内数据开始位置
 	jnc rp_read
+! 否则说明已经读取64KB数据。此时调整当前段，为读下一段数据做准备
 	mov ax,es
-	add ax,#0x1000
+	add ax,#0x1000		! 将段基址调整为指向下一个64KB内存开始处
 	mov es,ax
-	xor bx,bx
-	jmp rp_read
+	xor bx,bx			! 清段内数据开始偏移值
+	jmp rp_read			! 跳转至rp_read(156行)处，继续读数据
 
+! read_track子程序。
+! 读当前磁道上指定开始扇区和需读扇区数的数据到es:bx开始处。参见第67行下对BIOS磁盘读中断
+! int 0x13, ah=2的说明。
+! al - 需读扇区数；	es:bx - 缓冲区开始位置
 read_track:
 	push ax
 	push bx
 	push cx
 	push dx
-	mov dx,track
-	mov cx,sread
-	inc cx
-	mov ch,dl
-	mov dx,head
-	mov dh,dl
-	mov dl,#0
-	and dx,#0x0100
-	mov ah,#2
+	mov dx,track		! 取当前磁道号
+	mov cx,sread		! 取当前磁道上已读扇区数
+	inc cx				! cl = 开始读扇区
+	mov ch,dl			! ch = 当前磁道号
+	mov dx,head			! 取当前磁头号
+	mov dh,dl			! dh = 磁头号
+	mov dl,#0			！dl = 驱动器号（为0表示当前A驱动器）
+	and dx,#0x0100		! 磁头号不大于1
+	mov ah,#2			! ah = 2，读磁盘扇区功能号
 	int 0x13
-	jc bad_rt
+	jc bad_rt			! 若出错，则跳转至bad_rt
 	pop dx
 	pop cx
 	pop bx
 	pop ax
 	ret
+! 读磁盘操作出错。则执行驱动器复位操作（磁盘中断功能号0），再跳转到read_track处重试
 bad_rt:	mov ax,#0
 	mov dx,#0
 	int 0x13
@@ -310,25 +369,37 @@ bad_rt:	mov ax,#0
  * that we enter the kernel in a known state, and
  * don't have to worry about it later.
  */
+ /* 这个子程序用于关闭软驱的马达，这样我们进入内核后就能
+  * 知道它所处的状态，以后也就无须担心它了。
+  */
+! 下面第235行上的值0x3f2是软盘控制器的一个端口，被成为数字输出寄存器(DOR)端口。它是
+! 一个8位的寄存器，其位7--位4分别用于控制4个软驱(D--A)的开启与关闭。位3--位2用于
+! 允许/禁止DMA和中断请求以及启动/复位软盘控制器FDC。位1--位0用于选择选择操作的软驱。
+! 第236行上在al中设置并输出的0值，就是用于选择A驱动器，关闭FDC，禁止DMA和中断请求，
+! 关闭马达。有关软驱控制卡编程的详细信息请参见kernel/blk_drv/floppy.c程序后面的说明。
 kill_motor:
 	push dx
-	mov dx,#0x3f2
-	mov al,#0
-	outb
+	mov dx,#0x3f2			! 软驱控制卡的数字输出寄存器(DOR)端口，只写
+	mov al,#0				! A驱动器，关闭FDC，禁止DMA和中断请求，关闭马达。
+	outb					! 将al中的内容输出到dx指定的端口去
 	pop dx
 	ret
 
 sectors:
-	.word 0
+	.word 0					! 存放当前启动软盘每磁道的扇区数
 
-msg1:
-	.byte 13,10
+msg1:						! 调用BIOS中断显示的信息
+	.byte 13,10				! 回车、换行的ASCII码
 	.ascii "Loading system ..."
-	.byte 13,10,13,10
+	.byte 13,10,13,10		! 共24个ASCII码字符
 
+! 表示下面语句从地址508(0x1fc)开始，所以root_dev在启动扇区的第508开始的2个字节中。
 .org 508
 root_dev:
-	.word ROOT_DEV
+	.word ROOT_DEV			! 这里存放根文件系统所在设备号(init/main.c中会用)
+
+! 下面是启动盘具有有效引导扇区的标志。仅供BIOS中的程序加载引导扇区时识别使用。
+! 它必须位于引导扇区的最后两个字节中
 boot_flag:
 	.word 0xAA55
 
