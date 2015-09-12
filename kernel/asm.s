@@ -16,7 +16,7 @@
  * 进行保护/恢复处理，这些还没有测试过。
  */
 
-# 本代码文件主要涉及对inter保留中断int0--int16的处理(int17-int31留作今后使用)
+# 本代码文件主要涉及对intel保留中断int0--int16的处理(int17-int31留作今后使用)
 # 以下是一些全局函数名的声明，其原型在traps.c中说明。
 .globl _divide_error,_debug,_nmi,_int3,_overflow,_bounds,_invalid_op
 .globl _double_fault,_coprocessor_segment_overrun
@@ -42,9 +42,9 @@ no_error_code:					# 这里是无错误号处理的入口处，见下面第55行
 	push %es
 	push %fs
 	pushl $0		# "error code"	# 将数值0作为出错码入栈
-	lea 44(%esp),%edx			# 取堆栈中原调用返回地址处堆栈指针位置，并压入堆栈
+	lea 44(%esp),%edx			# 取堆栈中原调用返回地址处堆栈指针位置，并压入堆栈(44代表从开始到最后压栈的字节数)
 	pushl %edx
-	movl $0x10,%edx				# 初始化段寄存器ds、es和fs，加载内核数据段选择符
+	movl $0x10,%edx				# 初始化段寄存器ds、es和fs，加载内核数据段选择符(不明白)
 	mov %dx,%ds
 	mov %dx,%es
 	mov %dx,%fs
@@ -52,8 +52,8 @@ no_error_code:					# 这里是无错误号处理的入口处，见下面第55行
 # 异常的C处理函数，例如do_divide_error()等。第40行是将堆栈指针加8相当于两次pop操作，
 # 弹出(丢弃)最后入堆栈的两个C函数参数(32行和34行入栈的值)，让堆栈指针重新指向寄存器
 # fs入栈处。
-	call *%eax
-	addl $8,%esp
+	call *%eax					# 间接调用，例如调用C函数do_divide_error()等
+	addl $8,%esp				# 让堆栈指针重新指向寄存器fs入栈处
 	pop %fs
 	pop %es
 	pop %ds
@@ -122,14 +122,14 @@ _reserved:
 # 当协处理器执行完一个操作时就会发出IRQ13中断信号，以通知CPU操作完成。80387在执行
 # 计算时，CPU会等待其操作完成。下面88行上0xF0是协处理端口，用于请忙锁存器。通过写
 # 该端口，本中断将消除CPU的BUSY延续信号，并重新激活80387的处理器扩展请求引脚PEREQ
-# 该操作主要是为了确保在继续执行80387的任何指令之前，CPU相应本中断。
+# 该操作主要是为了确保在继续执行80387的任何指令之前，CPU响应本中断。
 _irq13:
 	pushl %eax
-	xorb %al,%al
+	xorb %al,%al			# 80387在执行计算时，CPU会等待其操作的完成。(????)
 	outb %al,$0xF0
 	movb $0x20,%al
 	outb %al,$0x20			# 向8259主中断控制芯片发送EOI(中断结束)信号
-	jmp 1f					# 在连个跳转指令起延时作用
+	jmp 1f					# 这两个跳转指令起延时作用
 1:	jmp 1f
 1:	outb %al,$0xA0			# 再向8259从中断控制芯片发送EOI(中断结束)信号
 	popl %eax
@@ -138,10 +138,10 @@ _irq13:
 # 以下中断在调用时CPU会在中断返回之后将错误号压入堆栈，因此返回时也需要将出错号弹出。
 
 # int8 --双出错故障。类型：放弃；有错误码。
-# 通常当CPU在调用前一个异常的处理程序而又检测到一个新的异常时，这两个异常会被穿行地进行
-# 处理，但也会碰到很少的情况，CPU不能进行这样的穿行处理操作，此时就会引发该中断。
+# 通常当CPU在调用前一个异常的处理程序而又检测到一个新的异常时，这两个异常会被串行地进行
+# 处理，但也会碰到很少的情况，CPU不能进行这样的串行处理操作，此时就会引发该中断。
 _double_fault:
-	pushl $_do_double_fault	# C函数地址入栈
+	pushl $_do_double_fault	# C函数地址入栈(错误号什么压栈了？)
 error_code:
 	xchgl %eax,4(%esp)		# error code <-> %eax	eax原来的值被保存在堆栈上
 	xchgl %ebx,(%esp)		# &function <-> %ebx	ebx原来的值被波存在堆栈上
