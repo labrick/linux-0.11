@@ -409,7 +409,7 @@ void un_wp_page(unsigned long * table_entry)
 // 程，就直接把属性改为可写即可，不用再重新申请一个新页面。
 	old_page = 0xfffff000 & *table_entry;		// 取指定页表项中物理页面地址
 	if (old_page >= LOW_MEM && mem_map[MAP_NR(old_page)]==1) {
-		*table_entry |= 2;
+		*table_entry |= 2;	// 该mem_map[]只用一次，则直接设置可写，否则需要复制
 		invalidate();
 		return;
 	}
@@ -421,7 +421,7 @@ void un_wp_page(unsigned long * table_entry)
 		oom();							// Out of Memory。内存不够处理
 	if (old_page >= LOW_MEM)
 		mem_map[MAP_NR(old_page)]--;
-	*table_entry = new_page | 7;
+	*table_entry = new_page | 7;		// 修改原页表项内容为新申请的页框地址
 	invalidate();
 	copy_page(old_page,new_page);
 }	
@@ -713,7 +713,8 @@ void do_no_page(unsigned long error_code,unsigned long address)
 // 否则说明所缺页面在进程执行映像文件范围内，于是就尝试共享页面操作，若成功则退出。
 // 若不成功就只能申请一页物理内存页面page，然后从设备上读取执行文件中的相应页面并
 // 放置(映射)到进程页面逻辑地址tmp处。
-	if (share_page(tmp))		// 尝试逻辑地址tmp处页面的共享，为什么要共享？？
+// 逻辑地址tmp处页面共享，如果能够找到共享，说明该内容已经在页表中了，不需要再读取
+	if (share_page(tmp))		
 		return;
 	if (!(page = get_free_page()))	// 申请一页物理内存
 		oom();
