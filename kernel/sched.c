@@ -526,41 +526,49 @@ int sys_alarm(long seconds)
 	int old = current->alarm;
 
 	if (old)
-		old = (old - jiffies) / HZ;
-	current->alarm = (seconds>0)?(jiffies+HZ*seconds):0;
+		old = (old - jiffies) / HZ;		// 转换单位为秒
+	current->alarm = (seconds>0)?(jiffies+HZ*seconds):0;	// 再转换为滴答数
 	return (old);
 }
 
+// 取当前进程号pid
 int sys_getpid(void)
 {
 	return current->pid;
 }
 
+// 取父进程号ppid
 int sys_getppid(void)
 {
 	return current->father;
 }
 
+// 取用户号uid
 int sys_getuid(void)
 {
 	return current->uid;
 }
 
+// 取有效的用户号euid
 int sys_geteuid(void)
 {
 	return current->euid;
 }
 
+// 取组号gid
 int sys_getgid(void)
 {
 	return current->gid;
 }
 
+// 取有效的组号egid
 int sys_getegid(void)
 {
 	return current->egid;
 }
 
+// 系统调用功能 - 降低对CPU的使用优先权(有人会用吗？)
+// 应该限制increment为大于0的值，否则可使优先权增大！！
 int sys_nice(long increment)
 {
 	if (current->priority-increment>0)
@@ -568,15 +576,26 @@ int sys_nice(long increment)
 	return 0;
 }
 
+// 内核调度程序的初始化子程序
 void sched_init(void)
 {
 	int i;
-	struct desc_struct * p;
+	struct desc_struct * p;		// 描述符表结构指针
 
-	if (sizeof(struct sigaction) != 16)
+// Linux系统开发之初，内核不成熟。内核代码会被经常修改。Linus怕自己无意中修改了这些
+// 关键性的数据结构，造成与POSIX标准的不兼容。这里加入下面这个判断语句并无必要，纯
+// 粹是为了提醒自己以及其他修改内核代码的人。
+	if (sizeof(struct sigaction) != 16)			// sigaction是存放有关信号状态的结构
 		panic("Struct sigaction MUST be 16 bytes");
+// 在全局描述符表中设置初始任务(任务0)的任务状态段描述符和局部数据表描述符。
+// FIRST_TSS_ENTRY和FIRST_LDT_ENTRY的值分别是4和5，定义在include/linux/sched.h中；
+// gdt是一个描述符表数组(include/linux/head.h)，实际上对应程序head.s中第234行上的全
+// 局描述符表基址(_gdt)。因此gdt+FIRST_TSS_ENTRY即为gdt(FIRST_TSS_ENTRY)(即为
+// gdt[4])，也即gdt数组第4项的地址。参见include/asm/system.h，第65行开始。
 	set_tss_desc(gdt+FIRST_TSS_ENTRY,&(init_task.task.tss));
 	set_ldt_desc(gdt+FIRST_LDT_ENTRY,&(init_task.task.ldt));
+// 清任务数组和描述符表项(注意i=1开始，所以初始任务的描述符还在)。描述符项结构定义
+// 在文件include/linux/head.h中。
 	p = gdt+2+FIRST_TSS_ENTRY;
 	for(i=1;i<NR_TASKS;i++) {
 		task[i] = NULL;
@@ -586,12 +605,23 @@ void sched_init(void)
 		p++;
 	}
 /* Clear NT, so that we won't have troubles with that later on */
+/* 清除标志寄存器中的位NT，这样以后就不会有麻烦 */
+// NT标志用于控制程序的递归调用(Nested Task)。当NT置位时，那么当前中断任务执行iret
+// 指令时就会引起任务切换。NT指出TSS中的back_link字段是否有效。
 	__asm__("pushfl ; andl $0xffffbfff,(%esp) ; popfl");
+// 将任务0的TSS段选择符加载到任务寄存器tr。将局部描述符表段选择符加载到局部描述符
+// 表寄存器ldtr中。注意！！是将GDT中相应LDT描述符的选择符加载到ldtr。只明确加一次，
+// 以后新任务LDT的加载，是CPU根据TSS中的LDT项自动加载。
 	ltr(0);
 	lldt(0);
+// 下面代码用于初始化8253定时器。通道0，选择工作方式3，二进制计数方式。通道0的输出
+// 引脚接在中断控制主芯片的IRQ0上，它每10ms发出一个IRQ0请求。LATCH是初始定时计数值。
 	outb_p(0x36,0x43);		/* binary, mode 3, LSB/MSB, ch 0 */
-	outb_p(LATCH & 0xff , 0x40);	/* LSB */
-	outb(LATCH >> 8 , 0x40);	/* MSB */
+	outb_p(LATCH & 0xff , 0x40);	/* LSB */		// 定时值低字节
+	outb(LATCH >> 8 , 0x40);	/* MSB */			// 定时值高字节
+// 设置时钟中断处理程序句柄(设置时钟中断门)。修改中断控制器屏蔽码，允许时钟中断。
+// 然后设置系统调用中断门。这两个设置中断描述符表IDT中描述符的宏定义在文件
+// include/asm/system.h中第33、39行处。两者的区别参见system.h文件开始处的说明。
 	set_intr_gate(0x20,&timer_interrupt);
 	outb(inb_p(0x21)&~0x01,0x21);
 	set_system_gate(0x80,&system_call);
