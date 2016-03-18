@@ -193,7 +193,7 @@ int free_page_tables(unsigned long from,unsigned long size)
 // 页目录表从物理地址0开始存放，因此实际目录项指针 = 目录项号<<2，也即(from>>20)。
 // "与"上0xffc确保目录项指针范围有效，即用于屏蔽目录项指针最后2位。因为只移动了
 // 20位，因此最后2位是页表项索引的内容，应屏蔽掉。
-	size = (size + 0x3fffff) >> 22;		// 就是为了保证size多与4MB的整数倍时进1
+	size = (size + 0x3fffff) >> 22;		// 将字节转换为所占用的页表数，多就进
 	dir = (unsigned long *) ((from>>20) & 0xffc); /* _pg_dir = 0 */
 // 此时size是释放的页表个数，即页目录项数，而dir是起始目录项指针。现在开始循环
 // 操作页目录项，依次释放每个页表中的页表项。如果当前目录项无效(P位=0)，表示该
@@ -205,7 +205,7 @@ int free_page_tables(unsigned long from,unsigned long size)
 	for ( ; size-->0 ; dir++) {		// size-->0表示size--大于0
 		if (!(1 & *dir))			// 判断P位是否有效，也就是最低位
 			continue;
-		pg_table = (unsigned long *) (0xfffff000 & *dir);	// 取页表地址
+		pg_table = (unsigned long *) (0xfffff000 & *dir);	// 取页表首址
 		for (nr=0 ; nr<1024 ; nr++) {
 			if (1 & *pg_table)		// 若该项有效，则释放对应页
 				free_page(0xfffff000 & *pg_table);
